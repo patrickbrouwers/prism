@@ -16,7 +16,7 @@ beforeEach(function (): void {
 });
 
 it('can generate text with a basic stream', function (): void {
-    // FixtureResponse::fakeResponseSequence('v1/chat/completions', 'openai/stream-basic-text');
+    FixtureResponse::fakeResponseSequence('v1/chat/completions', 'openai/stream-basic-text');
 
     $response = Prism::text()
         ->using('openai', 'gpt-4')
@@ -33,6 +33,14 @@ it('can generate text with a basic stream', function (): void {
 
     expect($chunks)->not->toBeEmpty();
     expect($text)->not->toBeEmpty();
+
+    // Verify the HTTP request
+    Http::assertSent(function (Request $request): bool {
+        $body = json_decode($request->body(), true);
+
+        return $request->url() === 'https://api.openai.com/v1/chat/completions'
+            && $body['stream'] === true;
+    });
 });
 
 it('can generate text using tools with streaming', function (): void {
