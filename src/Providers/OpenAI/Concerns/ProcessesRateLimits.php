@@ -2,18 +2,18 @@
 
 namespace Prism\Prism\Providers\OpenAI\Concerns;
 
-use Illuminate\Http\Client\Response;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Str;
 use Prism\Prism\ValueObjects\ProviderRateLimit;
+use Psr\Http\Message\ResponseInterface;
 
 trait ProcessesRateLimits
 {
     /**
      * @return ProviderRateLimit[]
      */
-    protected function processRateLimits(Response $response): array
+    protected function processRateLimits(ResponseInterface $response): array
     {
         $limitHeaders = array_filter(
             $response->getHeaders(),
@@ -22,6 +22,7 @@ trait ProcessesRateLimits
         );
 
         $rateLimits = [];
+        $data = json_decode((string) $response->getBody());
 
         foreach ($limitHeaders as $headerName => $headerValues) {
             $limitName = Str::of($headerName)->afterLast('-')->toString();
@@ -31,7 +32,8 @@ trait ProcessesRateLimits
         }
 
         if ($rateLimits === []) {
-            $error = data_get($response->json(), 'error');
+            $error = data_get($data, 'error');
+
             if (is_null($error)) {
                 return [];
             }

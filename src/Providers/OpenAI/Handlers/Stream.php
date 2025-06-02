@@ -5,9 +5,9 @@ declare(strict_types=1);
 namespace Prism\Prism\Providers\OpenAI\Handlers;
 
 use Generator;
-use Illuminate\Http\Client\PendingRequest;
-use Illuminate\Http\Client\RequestException;
-use Illuminate\Http\Client\Response;
+use GuzzleHttp\Client;
+use GuzzleHttp\Exception\ClientException;
+use GuzzleHttp\Exception\RequestException;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Str;
 use Prism\Prism\Concerns\CallsTools;
@@ -25,6 +25,7 @@ use Prism\Prism\Text\Request;
 use Prism\Prism\ValueObjects\Messages\AssistantMessage;
 use Prism\Prism\ValueObjects\Messages\ToolResultMessage;
 use Prism\Prism\ValueObjects\ToolCall;
+use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\StreamInterface;
 use Throwable;
 
@@ -32,7 +33,7 @@ class Stream
 {
     use CallsTools, ProcessesRateLimits;
 
-    public function __construct(protected PendingRequest $client) {}
+    public function __construct(protected Client $client) {}
 
     /**
      * @return Generator<Chunk>
@@ -47,7 +48,7 @@ class Stream
     /**
      * @return Generator<Chunk>
      */
-    protected function processStream(Response $response, Request $request, int $depth = 0): Generator
+    protected function processStream(ResponseInterface $response, Request $request, int $depth = 0): Generator
     {
         // Prevent infinite recursion with tool calls
         if ($depth >= $request->maxSteps()) {
@@ -203,33 +204,37 @@ class Stream
         return FinishReasonMap::map(data_get($data, 'choices.0.finish_reason') ?? '');
     }
 
-    protected function sendRequest(Request $request): Response
+    protected function sendRequest(Request $request): ResponseInterface
     {
         try {
-            return $this
-                ->client
-                ->withOptions(['stream' => true])
-                ->throw()
-                ->post(
-                    'chat/completions',
-                    array_merge([
-                        'stream' => true,
-                        'model' => $request->model(),
-                        'messages' => (new MessageMap($request->messages(), $request->systemPrompts()))(),
-                        'max_completion_tokens' => $request->maxTokens(),
-                    ], Arr::whereNotNull([
-                        'temperature' => $request->temperature(),
-                        'top_p' => $request->topP(),
-                        'metadata' => $request->providerOptions('metadata'),
-                        'tools' => ToolMap::map($request->tools()),
-                        'tool_choice' => ToolChoiceMap::map($request->toolChoice()),
-                    ]))
-                );
-        } catch (Throwable $e) {
-            if ($e instanceof RequestException && $e->response->getStatusCode() === 429) {
-                throw new PrismRateLimitedException($this->processRateLimits($e->response));
+            $payload = array_merge([
+                'stream' => true,
+                'model' => $request->model(),
+                'messages' => (new MessageMap($request->messages(), $request->systemPrompts()))(),
+                'max_completion_tokens' => $request->maxTokens(),
+            ], Arr::whereNotNull([
+                'temperature' => $request->temperature(),
+                'top_p' => $request->topP(),
+                'metadata' => $request->providerOptions('metadata'),
+                'tools' => ToolMap::map($request->tools()),
+                'tool_choice' => ToolChoiceMap::map($request->toolChoice()),
+            ]));
+
+            return $this->client->request('POST', 'chat/completions', [
+                'json' => $payload,
+                'stream' => true,
+                'headers' => [
+                    'Accept' => 'application/json',
+                    'Content-Type' => 'application/json',
+                ],
+            ]);
+        } catch (ClientException $e) {
+            if ($e->getResponse() && $e->getResponse()->getStatusCode() === 429) {
+                throw new PrismRateLimitedException($this->processRateLimits($e->getResponse()));
             }
 
+            throw PrismException::providerRequestError($request->model(), $e);
+        } catch (RequestException|Throwable $e) {
             throw PrismException::providerRequestError($request->model(), $e);
         }
     }
